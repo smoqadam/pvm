@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+
+set -e
+
+PVM_DIR="$HOME/.pvm"
+VERSIONS_DIR="$PVM_DIR/versions"
+CONFIG_FILE="$PVM_DIR/config.json"
+CURRENT_SYMLINK="$PVM_DIR/current"
+
+init_directories() {
+    mkdir -p "$VERSIONS_DIR"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo '{"installed_versions": [], "current": null}' > "$CONFIG_FILE"
+    fi
+}
+
+get_installed_versions() {
+    jq -r '.installed_versions[]' "$CONFIG_FILE"
+}
+
+get_current_version() {
+    jq -r '.current // empty' "$CONFIG_FILE"
+}
+
+add_version_to_config() {
+    local version=$1
+    local temp_file=$(mktemp)
+    jq --arg version "$version" '.installed_versions += [$version]' "$CONFIG_FILE" > "$temp_file"
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+set_current_version() {
+    local version=$1
+    local temp_file=$(mktemp)
+    jq --arg version "$version" '.current = $version' "$CONFIG_FILE" > "$temp_file"
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+remove_version_from_config() {
+    local version=$1
+    local temp_file=$(mktemp)
+    jq --arg version "$version" '.installed_versions -= [$version]' "$CONFIG_FILE" > "$temp_file"
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+detect_package_manager() {
+    if [ "$(uname)" == "Darwin" ]; then
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "Homebrew is required. Please install it first."
+            exit 1
+        fi
+        echo "brew"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    else
+        echo "Unsupported package manager. Currently supports: apt, dnf, and homebrew."
+        exit 1
+    fi
+}
+
+install_version() {
+    local version=$1
+    local install_dir="$VERSIONS_DIR/$version"
+    
+    if [ -d "$install_dir" ]; then
+        echo "PHP $version is already installed"
+        return
+    fi
+
+    echo "Installing PHP $version..."
+    mkdir -p "$install_dir"
+
+    local pkg_manager=$(detect_package_manager)
+    
+    case $pkg_manager in
+        "brew")
+            install_with_brew "$version" "$install_dir"
+            ;;
+        "apt")
+            install_with_apt "$version" "$install_dir"
+            ;;
+        "dnf")
+            install_with_dnf "$version" "$install_dir"
+            ;;
+    esac
+
+    add_version_to_config "$version"
+    echo "PHP $version installed successfully"
+}
+
+install_with_brew() {
+    local version=$1
+    local install_dir=$2
+    
+    brew install php@$version
+    
+    ln -sf "$(brew --prefix)/opt/php@$version/bin/php" "$install_dir/php"
+    ln -sf "$(brew --prefix)/opt/php@$version/bin/phpize" "$install_dir/phpize"
+    ln -sf "$(brew --prefix)/opt/php@$version/bin/php-config" "$install_dir/php-config"
+    ln -sf "$(brew --prefix)/opt/php@$version/bin/pecl" "$install_dir/pecl"
+    ln -sf "$(brew --prefix)/opt/php@$version/bin/composer" "$install_dir/composer"
+}
+
+install_with_apt() {
+    local version=$1
+    local install_dir=$2
+    
+    if ! grep -q "^deb.*ppa:ondrej/php" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+        sudo add-apt-repository -y ppa:ondrej/php
+        sudo apt-get update
+    fi
+    
+    sudo apt-get install -y php$version php$version-cli php$version-common \
+        php$version-curl php$version-mbstring php$version-xml php$version-zip \
+        php$version-mysql php$version-gd
+    
+    ln -sf "/usr/bin/php$version" "$install_dir/php"
+    ln -sf "/usr/bin/phpize$version" "$install_dir/phpize"
+    ln -sf "/usr/bin/php-config$version" "$install_dir/php-config"
+}
+
+install_with_dnf() {
+    local version=$1
+    local install_dir=$2
+    
+    if ! rpm -q remi-release >/dev/null 2>&1; then
+        sudo dnf install -y https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm
+    fi
+    
+    sudo dnf module reset php
+    sudo dnf module enable -y php:remi-$version
+    sudo dnf install -y php php-cli php-common php-curl php-mbstring \
+        php-xml php-zip php-mysql php-gd
+    
+    ln -sf "/usr/bin/php" "$install_dir/php"
+    ln -sf "/usr/bin/phpize" "$install_dir/phpize"
+    ln -sf "/usr/bin/php-config" "$install_dir/php-config"
+}
+
+use_version() {
+    local version=$1
+    
+    if [ ! -d "$VERSIONS_DIR/$version" ]; then
+        echo "PHP $version is not installed"
+        return 1
+    fi
+
+    rm -f "$CURRENT_SYMLINK"
+    ln -s "$VERSIONS_DIR/$version" "$CURRENT_SYMLINK"
+    
+    set_current_version "$version"
+    echo "Now using PHP $version"
+    
+    local shell_config="$HOME/.bashrc"
+    if [ -f "$HOME/.zshrc" ]; then
+        shell_config="$HOME/.zshrc"
+    fi
+    
+    if ! grep -q "PVM_DIR" "$shell_config"; then
+        echo "export PVM_DIR=\"$PVM_DIR\"" >> "$shell_config"
+        echo "export PATH=\"\$PVM_DIR/current:\$PATH\"" >> "$shell_config"
+        echo "Please restart your shell or source $shell_config"
+    fi
+}
+
+list_versions() {
+    echo "Installed versions:"
+    current=$(get_current_version)
+    
+    while IFS= read -r version; do
+        if [ "$version" == "$current" ]; then
+            echo "* $version"
+        else
+            echo "  $version"
+        fi
+    done < <(get_installed_versions)
+}
+
+uninstall_version() {
+    local version=$1
+    local version_dir="$VERSIONS_DIR/$version"
+    
+    if [ ! -d "$version_dir" ]; then
+        echo "PHP $version is not installed"
+        return 1
+    fi
+
+    if [ "$(get_current_version)" == "$version" ]; then
+        echo "Cannot uninstall currently active version"
+        return 1
+    fi
+
+    local pkg_manager=$(detect_package_manager)
+    
+    case $pkg_manager in
+        "brew")
+            brew uninstall php@$version
+            ;;
+        "apt")
+            sudo apt-get remove -y php$version php$version-cli php$version-common
+            ;;
+        "dnf")
+            sudo dnf remove -y php php-cli php-common
+            ;;
+    esac
+
+    rm -rf "$version_dir"
+    remove_version_from_config "$version"
+    echo "PHP $version uninstalled successfully"
+}
+
+init_directories
+
+case $1 in
+    "install")
+        if [ -z "$2" ]; then
+            echo "Please specify a version to install"
+            exit 1
+        fi
+        install_version "$2"
+        ;;
+    "use")
+        if [ -z "$2" ]; then
+            echo "Please specify a version to use"
+            exit 1
+        fi
+        use_version "$2"
+        ;;
+    "list")
+        list_versions
+        ;;
+    "uninstall")
+        if [ -z "$2" ]; then
+            echo "Please specify a version to uninstall"
+            exit 1
+        fi
+        uninstall_version "$2"
+        ;;
+    *)
+        echo "PHP Version Manager (pvm)"
+        echo "Usage: pvm <command> [args]"
+        echo ""
+        echo "Commands:"
+        echo "  install <version>    Install specified PHP version"
+        echo "  use <version>       Switch to specified PHP version"
+        echo "  list                List installed versions"
+        echo "  uninstall <version> Remove specified PHP version"
+        ;;
+esac
