@@ -7,6 +7,7 @@ A simple bash script to manage multiple PHP versions on Linux and macOS.
 ```bash
 curl -o /usr/local/bin/pvm https://raw.githubusercontent.com/smoqadam/pvm/main/pvm
 chmod +x /usr/local/bin/pvm
+export PATH="$HOME/.pvm/current:$PATH"
 ```
 
 ## Usage
