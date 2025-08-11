@@ -7,6 +7,36 @@ VERSIONS_DIR="$PVM_DIR/versions"
 CONFIG_FILE="$PVM_DIR/config.json"
 CURRENT_SYMLINK="$PVM_DIR/current"
 
+check_dependencies() {
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "Error: jq is required but not installed."
+        echo "Please install it first:"
+
+        if [ "$(uname)" == "Darwin" ]; then
+            if command -v brew >/dev/null 2>&1; then
+                echo "  brew install jq"
+            else
+                echo "  Install Homebrew first, then run: brew install jq"
+                echo "  Or download from: https://jqlang.github.io/jq/download/"
+            fi
+        elif command -v apt-get >/dev/null 2>&1; then
+            echo "  sudo apt-get install jq"
+        elif command -v yum >/dev/null 2>&1; then
+            echo "  sudo yum install jq"
+        elif command -v dnf >/dev/null 2>&1; then
+            echo "  sudo dnf install jq"
+        elif command -v pacman >/dev/null 2>&1; then
+            echo "  sudo pacman -S jq"
+        elif command -v zypper >/dev/null 2>&1; then
+            echo "  sudo zypper install jq"
+        else
+            echo "  Check your package manager documentation or visit: https://jqlang.github.io/jq/download/"
+        fi
+
+        exit 1
+    fi
+}
+
 init_directories() {
     mkdir -p "$VERSIONS_DIR"
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -211,6 +241,7 @@ uninstall_version() {
     echo "PHP $version uninstalled successfully"
 }
 
+check_dependencies
 init_directories
 
 case $1 in
